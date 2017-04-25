@@ -9,39 +9,41 @@
 // Our library sends an email notification on success and does nothing on failure
 // (the patron will receive a courtesy notice the following day)
 
+// Update 2017-04-18: Changed token mechanism to Utilize the "Info" endpoint.
+//					  No longer relying on API's "total" entry to traverse array of checkouts.
+
+
 */
 
 include "connect.php";
 
 // Create an API token and gets its timestamp
-$token_stamp = new DateTime();
+$token_stamp = 0;
 $token = getToken(null, $token_stamp);
 
 // Retrieve pid from database and call renewItems() function
 $query = "SELECT * FROM autorenew.patrons WHERE isActive > 0";
 $result = $mysqli->query($query);
+
 while($row = $result->fetch_assoc())
 {
 	renewItems($row['recordnum'], $token, $token_stamp, $row['email']);
 }
 
-
 /*
 //	getToken($token, &$tstamp)
 //  Input: String $token (can be null), DateTime $tstamp: timestamp of token (cannot be null)
 //			$tstamp is passed by reference and will be changed if a new token is created.
-//	Output: If $token is still valid (within 5 minutes of creation), returns existing $token. 
+//	Output: If $token is still valid (within $token_expire_interval seconds of expiration), returns existing $token. 
 //		Else returns new $token and updates $tstamp to current time
 */
 function getToken($token, &$tstamp){
 	include "apiconstants.php";
 	
 	// If token is expired, get new token
-	if ($tstamp < new DateTime() || is_null($token))
+	if ($tstamp <= (time() - $token_expire_interval) || is_null($token))
 	{
-		$tstamp = new DateTime();
-		$tstamp->add(new DateInterval('P5M')); // renew token every 5 minutes on new transaction
-		
+		echo date("Y-m-d H:i:s")." Token expired or null. Requesting new token.\n";
 		// Address for token request
 		$tokenurl = $apiurl."token";
 
@@ -68,11 +70,40 @@ function getToken($token, &$tstamp){
 
 		$tokenData = json_decode($response, true);
 		if(is_null($tokenData)){
-			echo date("Y-m-d H:i:s")." "."Could not retrieve token from server.\n";
+			echo date("Y-m-d H:i:s")." Could not retrieve token from server.\n";
 			return false;
 		}
 		$token = $tokenData["access_token"];
-		return $token;
+		
+		// Get time remaining for token and update tstamp
+		$tokenurl = $apiurl."info/token";
+		$ch = curl_init($tokenurl);
+		curl_setopt_array($ch,array(
+			CURLOPT_HTTPGET => TRUE,
+			CURLOPT_RETURNTRANSFER => TRUE,
+			CURLOPT_HTTPHEADER => array(
+					'Host: '.$hosturl,
+					'Authorization: Bearer '.$token,
+					'User-Agent: '.$appname,
+					'X-Forwarded-For: '.$webserver
+			)
+	));
+	$response = curl_exec($ch);
+
+	if($response === FALSE){
+		echo date("Y-m-d H:i:s")." ".curl_error($ch)."\n";
+		return false;
+	}
+
+	$tiData = json_decode($response, true);
+	if(is_null($tiData)){
+		echo date("Y-m-d H:i:s")." Token info response is null.\n";
+		return false;
+	}
+	$tstamp = $tiData["expiresIn"] + time();
+	
+	
+	return $token;
 		
 	}
 	else // do nothing, return original token
@@ -119,7 +150,7 @@ function renewItems($pid, &$token, &$tstamp, $email){
 
 	$coData = json_decode($response, true);
 	if(is_null($coData)){
-		echo date("Y-m-d H:i:s")." "."Checkout response is null.\n";
+		echo date("Y-m-d H:i:s")." Checkout response is null.\n";
 		return false;
 	}
 	
@@ -137,9 +168,20 @@ function renewItems($pid, &$token, &$tstamp, $email){
 	$msgtxt = "";
 	$failtxt = "";
 	
-	for($i=0;$i<$numCheckouts;$i++)
+	
+	foreach($entries as $temp)
 	{
-		$temp = (array)$entries[$i];	
+		// reset variables
+		$dueDate = null;
+		$dueDT = null;
+		$rnwDate = null;
+		$renewCOURL = null;
+		$ch = null;
+		$response = null;
+		$renewData = null;
+		$title = null;
+		$newDue = null;
+		$derror = null;
 				
 		// Attempt renewal for this checkout, find due date and renewal date
 		$dueDate = $temp["dueDate"];
@@ -178,28 +220,57 @@ function renewItems($pid, &$token, &$tstamp, $email){
 			
 			$renewData = json_decode($response, true);
 			if(is_null($renewData)){
-					echo date("Y-m-d H:i:s")." "."Renewal response is null.\n";
+					echo date("Y-m-d H:i:s")." Renewal response is null.\n";
 					return false;
 			}
 			
 			// Parse response - echoed for debugging
 			if(curl_getinfo($ch,CURLINFO_HTTP_CODE) == 200){
-				// Success Response				
-				$success = $success + 1;
+				
 				
 				// Query API for title to include in notification
 				$title = getTitle($temp["item"], $token, $tstamp);
 				$newDue = $renewData["dueDate"];
 				
-				// Update notification message body
-				$msghtml = $msghtml."Title: {$title}<br>New Due Date: {$newDue}<br><br>";
-				$msgtxt = $msgtxt."Title: {$title}\nNew Due Date: {$newDue}\n\n";
+				if(strcmp($newDue,$dueDate)== 0)
+				{
+					// Due date didn't change, switch to failure (copied from below)
+					// Failure Response -- Replace with notification, if needed.
+					echo date("Y-m-d H:i:s")." Code: ".$renewData["code"].".".$renewData["specificCode"]."\n";
+					echo date("Y-m-d H:i:s")." HTTP Status: ".$renewData["httpStatus"]."\n";
+					echo date("Y-m-d H:i:s")." Description: ".$renewData["description"]."\n";
+					echo "Renewal URL: ".$renewCOURL."\n";
+					echo "Server Response: ".$response."\n";
+					echo "JSON Response: \n";
+					echo var_dump($renewData)."\n";
+					$failed = $failed + 1;
+					
+					// Query API for title to include in notification
+					$title = getTitle($temp["item"], $token, $tstamp);	
+
+					// Update notification message body
+					$failhtml = $failhtml."Title: {$title}<br>Due Date: {$dueDate}<br>Reason: Unknown error - please try renewing online at <a href=\"http://mcpac.mcpl.lib.ny.us\">http://mcpac.mcpl.lib.ny.us</a> or by calling the library.<br><br>";
+					$failtxt = $failtxt."Title: {$title}\nDue Date: {$dueDate}\nReason: Unknown error - please try renewing online at http://mcpac.mcpl.lib.ny.us or by calling the library.\n\n";
+				}
+				else
+				{
+					// Success Response				
+					$success = $success + 1;
+					
+					// Update notification message body
+					$msghtml = $msghtml."Title: {$title}<br>New Due Date: {$newDue}<br><br>";
+					$msgtxt = $msgtxt."Title: {$title}\nNew Due Date: {$newDue}\n\n";
+				}
 			}
 			else {
 				// Failure Response -- Replace with notification, if needed.
-				echo date("Y-m-d H:i:s")." "."Code: ".$renewData["code"].".".$renewData["specificCode"]."\n";
-				echo date("Y-m-d H:i:s")." "."HTTP Status: ".$renewData["httpStatus"]."\n";
-				echo date("Y-m-d H:i:s")." "."Description: ".$renewData["description"]."\n";
+				echo date("Y-m-d H:i:s")." Code: ".$renewData["code"].".".$renewData["specificCode"]."\n";
+				echo date("Y-m-d H:i:s")." HTTP Status: ".$renewData["httpStatus"]."\n";
+				echo date("Y-m-d H:i:s")." Description: ".$renewData["description"]."\n";
+				echo "Renewal URL: ".$renewCOURL."\n";
+				echo "Server Response: ".$response."\n";
+				echo "JSON Response: \n";
+				echo var_dump($renewData)."\n";
 				$failed = $failed + 1;
 				
 				// Query API for title to include in notification
@@ -213,8 +284,8 @@ function renewItems($pid, &$token, &$tstamp, $email){
 				$derror = ucfirst(strtolower($derror));
 				
 				// Update notification message body
-				$failhtml = $failhtml."Title: {$title}<br>Due Date: {$dueDate}<br>Reason: {$derror}<br>";
-				$failtxt = $failtxt."Title: {$title}\nDue Date: {$dueDate}\nReason: {$derror}\n";
+				$failhtml = $failhtml."Title: {$title}<br>Due Date: {$dueDate}<br>Reason: {$derror}<br><br>";
+				$failtxt = $failtxt."Title: {$title}\nDue Date: {$dueDate}\nReason: {$derror}\n\n";
 			}			
 		} // end of renewal date check
 	} // end of for loop
@@ -314,13 +385,14 @@ function getTitle($item, &$token, &$tstamp)
 */
 function sendNotification($email, $itemsmsghtml, $failhtml, $itemsmsgtxt, $failtxt, $success, $failed)
 {
-	//Email results on success
-	if ($success > 0 && !is_null($email))
+	//Email results
+	if (($success > 0 || $failed > 0) && !is_null($email))
 	{
 		require_once 'Mail.php';
 		require_once 'Mail/mime.php';
 		
 		include 'mailvars.php';
+		include 'apiconstants.php';
 		
 		// create email headers
 		$xheaders = array('From' => $from,
@@ -329,24 +401,27 @@ function sendNotification($email, $itemsmsghtml, $failhtml, $itemsmsgtxt, $failt
 				'Subject' => $subject);
 		$mime = new Mail_mime();
 		
-		// Failures occurred. Include them in the message
-		if ($failed > 0)
+		
+		if ($success == 0)
 		{
-			$html = $htmlmsgtop.$itemsmsghtml."<br><br>".$htmlmsgmid.$failhtml."<br><br>".$htmlmsgbot;				
-			$text = $txtmsgtop.$itemsmsgtxt."\n\n".$txtmsgmid.$failtxt."\n\n".$txtmsgbot;
-		}
-		// No failures. Hide the failure portion of the message
-		else
-		{
-			$html = $htmlmsgtop.$itemsmsghtml."<br><br>".$htmlmsgbot;				
-			$text = $txtmsgtop.$itemsmsgtxt."\n\n".$txtmsgbot;
+			$itemsmsghtml = "No items due in ".$duexdays." were renewed.<br><br>";
+			$itemsmsgtxt = "No items due in ".$duexdays." were renewed.<br><br>";
 		}
 		
+		if ($failed == 0)
+		{
+			$failhtml = "No items due in ".$duexdays." were unable to be renewed.<br><br>";
+			$failtxt = "No items due in ".$duexdays." were unable to be renewed.<br><br>";
+		}
+		
+		$html = $htmlmsgtop.$itemsmsghtml."<br><br>".$htmlmsgmid.$failhtml."<br><br>".$htmlmsgbot;				
+		$text = $txtmsgtop.$itemsmsgtxt."\n\n".$txtmsgmid.$failtxt."\n\n".$txtmsgbot;
+				
 		
 		$mime->setTXTBody($text);
 		$mime->setHTMLBody($html);
 		
-		$now = new DateTime('NOW', new DateTimeZone('America/New_York'));
+		$now = new DateTime('NOW', new DateTimeZone($timezone));
 		
 		$message = $mime->get();
 		$headers = $mime->headers($xheaders);

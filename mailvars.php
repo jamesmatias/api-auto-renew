@@ -1,33 +1,24 @@
 <?php 
-// Email server settings for notifications
-$host="ssl://smtp.gmail.com";
-$port="465";
-$username="mylibrary@gmail.com";
-$password="mypassword";
-$from = 'My Library <mylibrary@gmail.com>';
-$replyto = 'info@mylibrary.org';
-$subject = 'Autorenewal System Notice';
+$host="ssl://smtp.gmail.com"; // Update
+$port="465"; // Update
+$username="ouraddress@gmail.com"; // Update
+$password="ourpassword"; // Update
+$timezone = 'America/New_York'; // Update
+$from = 'Our Library Notices <ouraddress@gmail.com>'; // Update
+$replyto = 'webmaster@mylibrary.org'; // Update
+$toemail = $email;
+$subject = 'Autorenewal System Notice'; // Update
 
-// Change the variables below to change the look of your notification emails
-// This HTML appears before the list of items that were renewed.
-$htmlmsgtop = "<h2>Public Library Autorenewal System Notice</h2><br><p>
-			The following items were successfully renewed: <br><br>";
-			
-// This HTML appears after the list of items that were renewed, but before the list of items that failed.
-// It only appears if items failed.
-$htmlmsgmid = "The following items are due soon but were unable to be renewed:<br><br>";
 
-// This HTML appears at the end of the email.
-$htmlmsgbot = "Please check your library record at <a href=\"https://sandbox.iii.com/patroninfo\">https://sandbox.iii.com/patroninfo</a> for more information.<br></p>";
+// Update the messages below with what you'd like to appear in the patron email message.
 
-// This HTML appears before the list of items that were renewed.
-$txtmsgtop = "Public Library Autorenewal System Notice\n\n
-			The following items were successfully renewed: \n\n";
-			
-// This HTML appears after the list of items that were renewed, but before the list of items that failed.
-// It only appears if items failed.
-$txtmsgmid = "The following items are due soon but were unable to be renewed:\n\n";
+$htmlmsgtop = "<h2>[Our] Library Autorenewal System Notice</h2><br><p>
+			The following item(s) were successfully renewed: <br><br>";
+$htmlmsgmid = "The following item(s) are due soon but were unable to be renewed:<br><br>";
+$htmlmsgbot = "Please check your library record at <a href=\"https://sierra.mylibrary.org/patroninfo\">https://sierra.mylibrary.org/patroninfo</a> for more information.<br></p>";
 
-// This HTML appears at the end of the email.
-$txtmsgbot = "Please check your library record at https://sandbox.iii.com/patroninfo for more information.\n";
+$txtmsgtop = "[Our] Library Autorenewal System Notice\n\n
+			The following item(s) were successfully renewed: \n\n";
+$txtmsgmid = "The following item(s) are due soon but were unable to be renewed:\n\n";
+$txtmsgbot = "Please check your library record at https://sierra.mylibrary.org/patroninfo for more information.\n";
 ?>
